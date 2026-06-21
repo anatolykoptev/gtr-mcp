@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - name: Build
+        run: npm run build
+      - name: FF-1 no-shell-execution check
+        run: npm run check
+      - name: FF-3 tool count ceiling
+        run: |
+          node -e "
+            const fs = require('fs');
+            const src = fs.readFileSync('src/tools/worktree.ts', 'utf8');
+            const names = [...src.matchAll(/name: \"(worktree_[^\"]+)\"/g)].map(m=>m[1]);
+            const defaultTools = names.filter(n => n !== 'worktree_exec');
+            console.log('Default tools: ' + defaultTools.join(', '));
+            if (defaultTools.length > 6) {
+              console.error('FF-3 FAIL: ' + defaultTools.length + ' default tools > 6 ceiling');
+              process.exit(1);
+            }
+            console.log('FF-3 PASS: ' + defaultTools.length + ' default tools');
+          "
+      - name: Test
+        run: npm test
+      - name: Type check
+        run: npm run typecheck

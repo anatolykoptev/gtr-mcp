@@ -1,0 +1,21 @@
+# Development and pitch artifacts — not shipped to npm consumers
+proposal-comment.md
+
+# Dev-only fitness function — not a runtime dependency
+dist/ff-check.js
+dist/ff-check.js.map
+dist/ff-check.d.ts
+dist/ff-check.d.ts.map
+*.draft.md
+.github/
+src/
+tsconfig.json
+vitest.config.*
+.eslint*
+.prettier*
+
+# Test fixtures
+src/__tests__/
+
+# Dev tooling
+node_modules/
