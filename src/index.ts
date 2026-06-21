@@ -72,7 +72,21 @@ Use git worktrees (via gtr) when:
 
 - \`worktree_status\` and \`worktree_remove\` accept the branch name; gtr resolves to the physical path
 - The \`worktree_path\` in \`worktree_create\` response is the actual filesystem path
-- \`worktree_list\` is authoritative — use it when unsure which worktree exists`;
+- \`worktree_list\` is authoritative — use it when unsure which worktree exists
+- \`worktree_path {repo_path, branch}\` resolves any branch/identifier to its absolute filesystem path without other side effects
+
+## Seeding a new worktree with ignored files
+
+Use \`worktree_copy\` to copy gitignored config or .env files from one worktree to another:
+
+\`\`\`
+worktree_copy {repo_path, from: "main", targets: ["feature-x"], patterns: [".env", "*.local"], dry_run: true}
+\`\`\`
+
+- Always run with \`dry_run: true\` first to preview
+- Non-destructive: only overwrites matching files; never deletes anything in the target
+- Omit \`patterns\` to use the repo's .gtrconfig \`copy.include\` patterns
+- Use \`all: true\` instead of \`targets\` to copy to all existing worktrees`;
 
 // ---------------------------------------------------------------------------
 // CLI / env configuration
@@ -129,7 +143,7 @@ async function main(): Promise<void> {
   const server = new Server(
     {
       name: "gtr-mcp",
-      version: "0.2.0",
+      version: "0.3.0",
     },
     {
       capabilities: {
@@ -268,7 +282,7 @@ async function main(): Promise<void> {
   // Log to stderr (stdout is the MCP wire)
   const repoMsg = repoPath ? ` (default repo: ${repoPath})` : "";
   const execMsg = enableExec ? " [exec enabled]" : "";
-  process.stderr.write(`gtr-mcp v0.2.0 running${repoMsg}${execMsg}\n`);
+  process.stderr.write(`gtr-mcp v0.3.0 running${repoMsg}${execMsg}\n`);
 }
 
 main().catch((err) => {

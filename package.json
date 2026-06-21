@@ -1,6 +1,6 @@
 {
   "name": "gtr-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "MCP server wrapping git-worktree-runner (gtr) for AI agent use",
   "main": "dist/index.js",
   "type": "module",

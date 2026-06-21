@@ -16,6 +16,8 @@ import {
   handleWorktreeCreate,
   handleWorktreeStatus,
   handleWorktreeRemove,
+  handleWorktreePath,
+  handleWorktreeCopy,
 } from "../tools/worktree.js";
 
 const TOOL_TIMEOUT = 30_000; // FF-2: 30s max per tool call
@@ -167,6 +169,99 @@ describe("integration: worktree lifecycle", () => {
     const data = JSON.parse(result.content[0].text);
     const branches: string[] = data.worktrees.map((w: { branch: string }) => w.branch);
     expect(branches).not.toContain(TEST_BRANCH);
+  });
+});
+
+describe("integration: worktree_path", () => {
+  const PATH_BRANCH = "gtr-mcp-it-path-branch";
+
+  it.skipIf(!gtrAvailable)("resolves main repo path via identifier '1'", async () => {
+    const result = await withTimeout(
+      handleWorktreePath({ repo_path: repoPath, branch: "1" }),
+      "path main"
+    );
+    const data = JSON.parse(result.content[0].text);
+    expect(data.error).toBeUndefined();
+    expect(typeof data.path).toBe("string");
+    expect(data.path.length).toBeGreaterThan(0);
+  });
+
+  it.skipIf(!gtrAvailable)("resolves path of a created worktree", async () => {
+    // Create a worktree first
+    await withTimeout(
+      handleWorktreeCreate({ repo_path: repoPath, branch: PATH_BRANCH }),
+      "create for path test"
+    );
+
+    const result = await withTimeout(
+      handleWorktreePath({ repo_path: repoPath, branch: PATH_BRANCH }),
+      "path"
+    );
+    const data = JSON.parse(result.content[0].text);
+    expect(data.error).toBeUndefined();
+    expect(data.branch).toBe(PATH_BRANCH);
+    expect(data.path).toMatch(/\//); // should be an absolute path
+  });
+
+  it.skipIf(!gtrAvailable)("returns error for non-existent branch", async () => {
+    const result = await withTimeout(
+      handleWorktreePath({ repo_path: repoPath, branch: "definitely-does-not-exist-xyz" }),
+      "path non-existent"
+    );
+    const data = JSON.parse(result.content[0].text);
+    expect(data.error).toBeTruthy();
+  });
+
+  it.skipIf(!gtrAvailable)("cleanup: remove path-test worktree", async () => {
+    await withTimeout(
+      handleWorktreeRemove({ repo_path: repoPath, branch: PATH_BRANCH, confirm: true }),
+      "remove path branch"
+    );
+  });
+});
+
+describe("integration: worktree_copy dry_run", () => {
+  const COPY_SRC = "gtr-mcp-it-copy-src";
+  const COPY_DST = "gtr-mcp-it-copy-dst";
+
+  it.skipIf(!gtrAvailable)("dry_run previews without copying (non-destructive gate)", async () => {
+    // Create source and destination worktrees
+    await withTimeout(
+      handleWorktreeCreate({ repo_path: repoPath, branch: COPY_SRC }),
+      "create copy-src"
+    );
+    await withTimeout(
+      handleWorktreeCreate({ repo_path: repoPath, branch: COPY_DST }),
+      "create copy-dst"
+    );
+
+    // dry_run copy — must succeed (success:true) or return an expected no-files warning
+    const result = await withTimeout(
+      handleWorktreeCopy({
+        repo_path: repoPath,
+        from: COPY_SRC,
+        targets: [COPY_DST],
+        patterns: [".env"],
+        dry_run: true,
+      }),
+      "copy dry_run"
+    );
+    const data = JSON.parse(result.content[0].text);
+    // dry_run should not fail at the tool level; gtr may warn about no files found
+    expect(data.error).toBeUndefined();
+    expect(data.dry_run).toBe(true);
+    expect(data.from).toBe(COPY_SRC);
+  });
+
+  it.skipIf(!gtrAvailable)("cleanup: remove copy worktrees", async () => {
+    await withTimeout(
+      handleWorktreeRemove({ repo_path: repoPath, branch: COPY_SRC, confirm: true }),
+      "remove copy-src"
+    );
+    await withTimeout(
+      handleWorktreeRemove({ repo_path: repoPath, branch: COPY_DST, confirm: true }),
+      "remove copy-dst"
+    );
   });
 });
 

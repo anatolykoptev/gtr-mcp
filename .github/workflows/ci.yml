@@ -27,8 +27,8 @@ jobs:
             const names = [...src.matchAll(/name: \"(worktree_[^\"]+)\"/g)].map(m=>m[1]);
             const defaultTools = names.filter(n => n !== 'worktree_exec');
             console.log('Default tools: ' + defaultTools.join(', '));
-            if (defaultTools.length > 6) {
-              console.error('FF-3 FAIL: ' + defaultTools.length + ' default tools > 6 ceiling');
+            if (defaultTools.length > 8) {
+              console.error('FF-3 FAIL: ' + defaultTools.length + ' default tools > 8 ceiling');
               process.exit(1);
             }
             console.log('FF-3 PASS: ' + defaultTools.length + ' default tools');

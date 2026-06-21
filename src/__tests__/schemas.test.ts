@@ -6,6 +6,8 @@ import {
   worktreeCreateSchema,
   worktreeRenameSchema,
   worktreeStatusSchema,
+  worktreePathSchema,
+  worktreeCopySchema,
 } from "../tools/worktree.js";
 
 // ---------------------------------------------------------------------------
@@ -242,5 +244,153 @@ describe("option-injection guard on branch/ref names", () => {
     expect(
       worktreeStatusSchema.safeParse({ repo_path: "/r", branch: "-C/etc" }).success
     ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// worktree_path schema
+// ---------------------------------------------------------------------------
+
+describe("worktree_path schema", () => {
+  it("accepts valid repo_path and branch", () => {
+    expect(
+      worktreePathSchema.safeParse({ repo_path: "/r", branch: "feat/my-branch" }).success
+    ).toBe(true);
+  });
+
+  it("accepts numeric identifier '1' (main repo shorthand)", () => {
+    expect(
+      worktreePathSchema.safeParse({ repo_path: "/r", branch: "1" }).success
+    ).toBe(true);
+  });
+
+  it("rejects branch starting with '-' (option-injection guard)", () => {
+    const result = worktreePathSchema.safeParse({ repo_path: "/r", branch: "--force" });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.message).toMatch(/option-injection guard/);
+  });
+
+  it("rejects missing branch", () => {
+    expect(
+      worktreePathSchema.safeParse({ repo_path: "/r" }).success
+    ).toBe(false);
+  });
+
+  // Falsification: removing the refine would make the leading-dash case pass
+  it("anti-drift: leading-dash rejection is load-bearing", () => {
+    const withDash = worktreePathSchema.safeParse({ repo_path: "/r", branch: "-evil" });
+    expect(withDash.success).toBe(false);
+    const withoutDash = worktreePathSchema.safeParse({ repo_path: "/r", branch: "good" });
+    expect(withoutDash.success).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// worktree_copy schema
+// ---------------------------------------------------------------------------
+
+describe("worktree_copy schema", () => {
+  it("accepts minimal valid input (from only)", () => {
+    expect(
+      worktreeCopySchema.safeParse({ repo_path: "/r", from: "main" }).success
+    ).toBe(true);
+  });
+
+  it("accepts full valid input with patterns", () => {
+    expect(
+      worktreeCopySchema.safeParse({
+        repo_path: "/r",
+        from: "main",
+        targets: ["feat/x", "feat/y"],
+        patterns: [".env", "config/*.json"],
+        dry_run: true,
+      }).success
+    ).toBe(true);
+  });
+
+  it("accepts all=true without targets", () => {
+    expect(
+      worktreeCopySchema.safeParse({ repo_path: "/r", from: "main", all: true }).success
+    ).toBe(true);
+  });
+
+  it("defaults dry_run to false", () => {
+    const result = worktreeCopySchema.safeParse({ repo_path: "/r", from: "main" });
+    expect(result.success).toBe(true);
+    expect(result.data?.dry_run).toBe(false);
+  });
+
+  it("rejects from starting with '-' (option-injection guard)", () => {
+    const result = worktreeCopySchema.safeParse({ repo_path: "/r", from: "--evil" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects target starting with '-'", () => {
+    const result = worktreeCopySchema.safeParse({
+      repo_path: "/r",
+      from: "main",
+      targets: ["-bad-target"],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects pattern starting with '-'", () => {
+    const result = worktreeCopySchema.safeParse({
+      repo_path: "/r",
+      from: "main",
+      patterns: ["--evil-flag"],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects pattern containing '..' (path-traversal guard)", () => {
+    const result = worktreeCopySchema.safeParse({
+      repo_path: "/r",
+      from: "main",
+      patterns: ["../../etc/passwd"],
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.message).toMatch(/path-traversal guard/);
+  });
+
+  it("rejects pattern starting with '/' (absolute path guard)", () => {
+    const result = worktreeCopySchema.safeParse({
+      repo_path: "/r",
+      from: "main",
+      patterns: ["/etc/passwd"],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts patterns with relative dots that are safe (e.g. '.env')", () => {
+    expect(
+      worktreeCopySchema.safeParse({ repo_path: "/r", from: "main", patterns: [".env"] }).success
+    ).toBe(true);
+  });
+
+  it("accepts patterns like '*.local' and 'config/*.json'", () => {
+    expect(
+      worktreeCopySchema.safeParse({
+        repo_path: "/r",
+        from: "main",
+        patterns: ["*.local", "config/*.json"],
+      }).success
+    ).toBe(true);
+  });
+
+  // Falsification: removing the '..' refine would allow traversal patterns
+  it("anti-drift: '..' rejection is load-bearing for traversal prevention", () => {
+    const withTraversal = worktreeCopySchema.safeParse({
+      repo_path: "/r",
+      from: "main",
+      patterns: ["../secret"],
+    });
+    expect(withTraversal.success).toBe(false);
+    const without = worktreeCopySchema.safeParse({
+      repo_path: "/r",
+      from: "main",
+      patterns: [".env"],
+    });
+    expect(without.success).toBe(true);
   });
 });

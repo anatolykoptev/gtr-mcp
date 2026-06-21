@@ -68,13 +68,38 @@ Using `worktree_exec` adds a layer of indirection with no safety benefit over yo
 gtr sanitizes branch names to folder names (`feature/x` → `feature-x`). The `worktree_path`
 in the `worktree_create` response is the actual filesystem path to use with your shell tools.
 
+## Resolving a worktree path
+
+Use `worktree_path` to convert a branch name or ID to its absolute filesystem path:
+
+```json
+{ "repo_path": "/path/to/repo", "branch": "feature-x" }
+```
+
+Returns `{ "path": "/path/to/repo-worktrees/feature-x", "branch": "feature-x" }`. Read-only.
+
+## Seeding a new worktree with gitignored files
+
+Use `worktree_copy` to copy config files, `.env`, or other gitignored files into a fresh worktree:
+
+```json
+{ "repo_path": "/path/to/repo", "from": "main", "targets": ["feature-x"], "patterns": [".env", "*.local"], "dry_run": true }
+```
+
+- Always run with `dry_run: true` first to preview what would be copied
+- Non-destructive: overwrites matching files but never deletes anything in the target
+- Omit `patterns` to use the repo's `.gtrconfig` `copy.include` configuration
+- Use `all: true` instead of `targets` to propagate to all worktrees at once
+
 ## Quick reference
 
 | Tool | Safety | Use when |
 |------|--------|----------|
 | `worktree_list` | SAFE | Starting any worktree task |
 | `worktree_status` | SAFE | Checking changes before cleanup |
+| `worktree_path` | SAFE | Resolving a branch to its absolute filesystem path |
 | `worktree_create` | MODIFY | Starting new parallel work |
+| `worktree_copy` | MODIFY | Seeding a new worktree with gitignored config/env files |
 | `worktree_rename` | MODIFY | Renaming a branch + its worktree atomically |
 | `worktree_remove` | DESTRUCTIVE | Cleaning up a finished worktree (needs `confirm: true`) |
 | `worktree_clean` | SAFE/DESTRUCTIVE | Pruning stale entries (add `confirm: true` for real removal) |

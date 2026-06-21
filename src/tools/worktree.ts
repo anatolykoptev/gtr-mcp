@@ -237,6 +237,64 @@ export const worktreeRenameSchema = z.object({
     .describe("New branch name"),
 });
 
+// worktree_path – SAFE (read-only path resolver)
+export const worktreePathSchema = z.object({
+  repo_path: z.string().describe("Absolute path to the git repository root"),
+  branch: z
+    .string()
+    .refine((v) => !v.startsWith("-"), {
+      message: "branch must not start with '-' (option-injection guard)",
+    })
+    .describe("Branch name or worktree identifier to resolve (e.g. 'main', 'feature/x', '1')"),
+});
+
+// worktree_copy – MODIFY (file-copy only; overwrites matching files but cannot delete
+// pre-existing target files via our inputs — gtr copy's rm-paths (copy.sh) act only on
+// freshly-copied trees driven by the repo's trusted .gtrconfig, never on existing files)
+export const worktreeCopySchema = z.object({
+  repo_path: z.string().describe("Absolute path to the git repository root"),
+  from: z
+    .string()
+    .refine((v) => !v.startsWith("-"), {
+      message: "from must not start with '-' (option-injection guard)",
+    })
+    .describe("Source worktree identifier (branch name, ID, or '1' for main)"),
+  targets: z
+    .array(
+      z
+        .string()
+        .refine((v) => !v.startsWith("-"), {
+          message: "target must not start with '-' (option-injection guard)",
+        })
+    )
+    .optional()
+    .describe("Target worktree identifiers to copy into (branch names or IDs)"),
+  patterns: z
+    .array(
+      z
+        .string()
+        .refine((v) => !v.startsWith("-"), {
+          message: "pattern must not start with '-' (option-injection guard)",
+        })
+        .refine((v) => !v.includes("..") && !v.startsWith("/"), {
+          message: "pattern must not contain '..' or start with '/' (path-traversal guard)",
+        })
+    )
+    .optional()
+    .describe("Glob patterns to copy (passed after '--' to gtr copy). If omitted, uses repo .gtrconfig copy.include patterns."),
+  all: z
+    .coerce
+    .boolean()
+    .optional()
+    .describe("Copy to all worktrees instead of named targets"),
+  dry_run: z
+    .coerce
+    .boolean()
+    .optional()
+    .default(false)
+    .describe("Preview what would be copied without making changes. Always safe to run."),
+});
+
 // worktree_clean – MODIFY (prunes stale entries; with --merged/--closed becomes DESTRUCTIVE)
 // confirm is required when (merged || closed) && !dry_run
 export const worktreeCleanSchema = z
@@ -413,6 +471,62 @@ const BASE_TOOLS: Tool[] = [
         },
       },
       required: ["repo_path", "old_branch", "new_branch"],
+    },
+  },
+  {
+    name: "worktree_path",
+    description:
+      "Resolve the absolute filesystem path of a worktree from its branch name or identifier. Wraps 'gtr go'. Useful when you know a branch name and need the physical path to pass to shell tools. SAFE – read-only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        repo_path: {
+          type: "string",
+          description: "Absolute path to the git repository root",
+        },
+        branch: {
+          type: "string",
+          description: "Branch name or worktree identifier to resolve (e.g. 'main', 'feature/x', '1')",
+        },
+      },
+      required: ["repo_path", "branch"],
+    },
+  },
+  {
+    name: "worktree_copy",
+    description:
+      "Copy files matching glob patterns from one worktree into one or more target worktrees. Wraps 'gtr copy'. Useful for seeding a fresh worktree with gitignored config files, .env, credentials, or build artifacts that are intentionally not committed. Only writes/overwrites matching files in the target; it cannot delete your pre-existing files. Use dry_run: true to preview before copying. MODIFY – overwrites matching files in target worktrees.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        repo_path: {
+          type: "string",
+          description: "Absolute path to the git repository root",
+        },
+        from: {
+          type: "string",
+          description: "Source worktree identifier (branch name, ID, or '1' for main)",
+        },
+        targets: {
+          type: "array",
+          items: { type: "string" },
+          description: "Target worktree identifiers to copy into (branch names or IDs). Required unless all is true.",
+        },
+        patterns: {
+          type: "array",
+          items: { type: "string" },
+          description: "Glob patterns to copy (e.g. '.env', '*.local', 'config/*.json'). If omitted, uses repo .gtrconfig copy.include patterns.",
+        },
+        all: {
+          type: "boolean",
+          description: "Copy to all worktrees instead of named targets",
+        },
+        dry_run: {
+          type: "boolean",
+          description: "Preview what would be copied without making changes",
+        },
+      },
+      required: ["repo_path", "from"],
     },
   },
   {
@@ -701,6 +815,74 @@ export async function handleWorktreeClean(
   }
 }
 
+export async function handleWorktreePath(
+  input: unknown
+): Promise<ToolResult> {
+  const parsed = worktreePathSchema.safeParse(input);
+  if (!parsed.success) return fail("Invalid input", { issues: parsed.error.issues });
+
+  const { repo_path, branch } = parsed.data;
+  try {
+    await validateRepoPath(repo_path);
+    const worktreePath = await resolveWorktreePath(branch, repo_path);
+    return ok({ path: worktreePath, branch });
+  } catch (err) {
+    return handleGtrError(err);
+  }
+}
+
+export async function handleWorktreeCopy(
+  input: unknown
+): Promise<ToolResult> {
+  const parsed = worktreeCopySchema.safeParse(input);
+  if (!parsed.success) return fail("Invalid input", { issues: parsed.error.issues });
+
+  const { repo_path, from, targets, patterns, all, dry_run } = parsed.data;
+
+  // Must have targets or all=true
+  const hasTargets = targets && targets.length > 0;
+  if (!hasTargets && !all) {
+    return fail("Either targets (array of branch identifiers) or all: true must be provided");
+  }
+
+  try {
+    await validateRepoPath(repo_path);
+
+    // Build argv: gtr copy [targets...] [--all] [--from <src>] [--dry-run] [-- <pattern>...]
+    const args: string[] = ["copy"];
+
+    // Positional targets come first
+    if (hasTargets) {
+      for (const t of targets ?? []) {
+        args.push(t);
+      }
+    }
+
+    if (all) args.push("--all");
+    args.push("--from", from);
+    if (dry_run) args.push("--dry-run");
+
+    // Patterns are passed after '--' as passthrough args
+    if (patterns && patterns.length > 0) {
+      args.push("--");
+      for (const p of patterns) {
+        args.push(p);
+      }
+    }
+
+    const result = await runGtr(args, repo_path, undefined, TIMEOUT_READ);
+    return ok({
+      success: true,
+      from,
+      targets: all ? "all" : targets,
+      dry_run: dry_run ?? false,
+      output: result.stdout.trim(),
+    });
+  } catch (err) {
+    return handleGtrError(err);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch table
 // ---------------------------------------------------------------------------
@@ -715,4 +897,6 @@ export const HANDLERS: Record<string, Handler> = {
   worktree_status: handleWorktreeStatus,
   worktree_rename: handleWorktreeRename,
   worktree_clean: handleWorktreeClean,
+  worktree_path: handleWorktreePath,
+  worktree_copy: handleWorktreeCopy,
 };

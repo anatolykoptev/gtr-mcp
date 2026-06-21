@@ -88,7 +88,9 @@ Add to `~/.claude/claude_desktop_config.json` or your project `.mcp.json`:
 |------|--------|-----------------|-------------|
 | `worktree_list` | SAFE | `repo_path` | List all worktrees with path, branch, status |
 | `worktree_status` | SAFE | `repo_path`, `branch` | Git status for a worktree (staged/unstaged/untracked, ahead/behind) |
+| `worktree_path` | SAFE | `repo_path`, `branch` | Resolve a branch/identifier to its absolute filesystem path |
 | `worktree_create` | MODIFY | `repo_path`, `branch` | Create a new worktree (and branch if needed) |
+| `worktree_copy` | MODIFY | `repo_path`, `from` | Copy files (by glob pattern) from one worktree into others; use `dry_run: true` to preview |
 | `worktree_rename` | MODIFY | `repo_path`, `old_branch`, `new_branch` | Rename a worktree and its branch atomically |
 | `worktree_remove` | DESTRUCTIVE | `repo_path`, `branch`, `confirm: true` | Remove a worktree from disk and git registry |
 | `worktree_clean` | MODIFY/DESTRUCTIVE | `repo_path` | Prune stale entries; `confirm: true` required with `merged`/`closed` |
@@ -105,6 +107,12 @@ Add to `~/.claude/claude_desktop_config.json` or your project `.mcp.json`:
 `worktree_remove` always requires `confirm: true`. `worktree_clean` with `merged: true` or
 `closed: true` (without `dry_run: true`) also requires `confirm: true`. This is Zod-schema
 enforced — the gate cannot be bypassed by an agent that infers the wrong intent.
+
+`worktree_copy` does not require a confirm gate: it is file-copy only (wraps `gtr copy`, which
+uses `cp` internally). It overwrites matching files in the target but cannot delete your
+pre-existing files — gtr's only directory-prune paths act on freshly-copied trees under the
+repo's own trusted `.gtrconfig`, never on existing target files. Use `dry_run: true` to preview
+before committing a real copy.
 
 ## Security notes
 
