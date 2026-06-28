@@ -15,14 +15,16 @@ Built as a contribution to [issue #67](https://github.com/coderabbitai/git-workt
 ### Via npx (no install)
 
 ```bash
-npx gtr-mcp --repo-path /path/to/your/repo
+cd /path/to/your/repo
+npx gtr-mcp
 ```
 
 ### Global install
 
 ```bash
 npm install -g gtr-mcp
-gtr-mcp --repo-path /path/to/your/repo
+cd /path/to/your/repo
+gtr-mcp
 ```
 
 ### From source
@@ -32,8 +34,18 @@ git clone https://github.com/coderabbitai/gtr-mcp
 cd gtr-mcp
 npm install
 npm run build
-node dist/index.js --repo-path /path/to/your/repo
+cd /path/to/your/repo
+node /path/to/gtr-mcp/dist/index.js
 ```
+
+## How it works
+
+gtr-mcp operates on the git repository at the **working directory it is launched in**.
+Set your MCP client's `cwd` field to the repository root. One server instance = one repo context.
+Multi-repo: add a separate MCP server entry per repo in your client config, each with its own `cwd`.
+
+This mirrors how gtr itself works — `git gtr` discovers its repo from the current directory
+via `git rev-parse --git-common-dir`, with no path argument required.
 
 ## MCP client configuration
 
@@ -45,11 +57,9 @@ Add to `~/.claude/claude_desktop_config.json` or your project `.mcp.json`:
 {
   "mcpServers": {
     "gtr": {
-      "command": "node",
-      "args": ["/path/to/gtr-mcp/dist/index.js"],
-      "env": {
-        "GTR_MCP_REPO_PATH": "/path/to/your/repo"
-      }
+      "command": "npx",
+      "args": ["gtr-mcp"],
+      "cwd": "/path/to/your/repo"
     }
   }
 }
@@ -64,10 +74,27 @@ Add to `~/.claude/claude_desktop_config.json` or your project `.mcp.json`:
       "gtr": {
         "command": "npx",
         "args": ["gtr-mcp"],
-        "env": {
-          "GTR_MCP_REPO_PATH": "/path/to/your/repo"
-        }
+        "cwd": "/path/to/your/repo"
       }
+    }
+  }
+}
+```
+
+### Multi-repo setup
+
+```json
+{
+  "mcpServers": {
+    "gtr-frontend": {
+      "command": "npx",
+      "args": ["gtr-mcp"],
+      "cwd": "/path/to/frontend"
+    },
+    "gtr-backend": {
+      "command": "npx",
+      "args": ["gtr-mcp"],
+      "cwd": "/path/to/backend"
     }
   }
 }
@@ -77,24 +104,24 @@ Add to `~/.claude/claude_desktop_config.json` or your project `.mcp.json`:
 
 | Env var | CLI arg | Description |
 |---------|---------|-------------|
-| `GTR_MCP_REPO_PATH` | `--repo-path <path>` | Default repo path; callers can omit `repo_path` per call |
-| `GTR_MCP_REPO_BASE` | `--repo-base <path>` | If set, all `repo_path` values must be under this directory |
-| `GTR_BIN` | `--gtr-bin <path>` | Path to the gtr binary (default: `git gtr` via PATH) |
-| `GTR_MCP_ENABLE_EXEC` | — | Set to `"1"` to expose the `worktree_exec` tool (off by default) |
+| `GTR_BIN` | `--gtr-bin <path>` | Path to the gtr binary (default: `git gtr` via PATH). Binary locator only — not a repo selector. |
+
+The `cwd` field in your MCP client config is the only repo-selection mechanism.
 
 ## Tools
 
 | Tool | Safety | Required params | Description |
 |------|--------|-----------------|-------------|
-| `worktree_list` | SAFE | `repo_path` | List all worktrees with path, branch, status |
-| `worktree_status` | SAFE | `repo_path`, `branch` | Git status for a worktree (staged/unstaged/untracked, ahead/behind) |
-| `worktree_path` | SAFE | `repo_path`, `branch` | Resolve a branch/identifier to its absolute filesystem path |
-| `worktree_create` | MODIFY | `repo_path`, `branch` | Create a new worktree (and branch if needed) |
-| `worktree_copy` | MODIFY | `repo_path`, `from` | Copy files (by glob pattern) from one worktree into others; use `dry_run: true` to preview |
-| `worktree_rename` | MODIFY | `repo_path`, `old_branch`, `new_branch` | Rename a worktree and its branch atomically |
-| `worktree_remove` | DESTRUCTIVE | `repo_path`, `branch`, `confirm: true` | Remove a worktree from disk and git registry |
-| `worktree_clean` | MODIFY/DESTRUCTIVE | `repo_path` | Prune stale entries; `confirm: true` required with `merged`/`closed` |
-| `worktree_exec` | MODIFY | `repo_path`, `branch`, `command` | Run a command inside a worktree (opt-in only) |
+| `worktree_list` | SAFE | — | List all worktrees with path, branch, status |
+| `worktree_status` | SAFE | `branch` | Git status for a worktree (staged/unstaged/untracked, ahead/behind) |
+| `worktree_path` | SAFE | `branch` | Resolve a branch/identifier to its absolute filesystem path |
+| `worktree_create` | MODIFY | `branch` | Create a new worktree (and branch if needed) |
+| `worktree_copy` | MODIFY | `from` | Copy files (by glob pattern) from one worktree into others; use `dry_run: true` to preview |
+| `worktree_rename` | MODIFY | `old_branch`, `new_branch` | Rename a worktree and its branch atomically |
+| `worktree_remove` | DESTRUCTIVE | `branch`, `confirm: true` | Remove a worktree from disk and git registry |
+| `worktree_clean` | MODIFY/DESTRUCTIVE | — | Prune stale entries; `confirm: true` required with `merged`/`closed` |
+
+No tool accepts a `repo_path` argument. The server is cwd-bound.
 
 ### Safety model
 
@@ -129,16 +156,6 @@ gtr's `.gtrconfig` `postCreate` hooks only execute if a **human** previously ran
 no trust tool. If `worktree_create` returns `hooks_ran: false`, a remediation message
 is included telling the human what to run.
 
-### Path restriction
-
-Set `GTR_MCP_REPO_BASE` to prevent an agent from operating on arbitrary paths:
-
-```bash
-GTR_MCP_REPO_BASE=/Users/me/Developer gtr-mcp
-```
-
-Any `repo_path` outside the base is rejected before the gtr subprocess is invoked.
-
 ### Porcelain output (Gate-0 finding)
 
 `gtr list --porcelain` outputs tab-separated `path\tbranch\tstatus` with **raw unescaped
@@ -146,17 +163,6 @@ values** — `list.sh` calls `_tsv_unescape_field` when reading stored records a
 prints raw via `printf`. No un-escape pass is needed on our side. A branch or path
 containing a literal tab character would corrupt the TSV output — this is a known gtr
 limitation, not a bug in this server.
-
-## The exec tool opt-in
-
-`worktree_exec` is disabled by default. Even when enabled, prefer your shell tool:
-
-```bash
-cd "$(git gtr go branch-name)" && your-command
-```
-
-`worktree_exec` adds an indirection layer with no safety benefit over your native shell.
-Set `GTR_MCP_ENABLE_EXEC=1` only if your client cannot run shell commands directly.
 
 ## Prompts
 
@@ -194,10 +200,14 @@ human run `git gtr trust` in the repo root.
 The `merged` and `closed` flags require the GitHub CLI (`gh`) or GitLab CLI (`glab`) to be
 installed and authenticated. Install them and run `gh auth login` first.
 
-### Startup validation — not a git repo
+### Startup warning — not a git repo
 
-Each tool call validates `repo_path` via `git rev-parse --git-dir` before invoking gtr.
-If you see `Not a git repository`, ensure the path points to a repo root (contains `.git`).
+```
+gtr-mcp warning: "/some/path" is not a git repository. ...
+```
+
+The server started but the `cwd` is not a git repository. Set the MCP client's `cwd` field
+to the repository root (the directory containing `.git`).
 
 ## Development
 
@@ -205,7 +215,7 @@ If you see `Not a git repository`, ensure the path points to a repo root (contai
 npm install
 npm run build      # tsc compile
 npm test           # vitest (parser + schema + integration if gtr available)
-npm run lint       # tsc --noEmit type check
+npm run typecheck  # tsc --noEmit type check
 npm run check      # FF-1: grep for shell execution patterns
 ```
 
@@ -222,10 +232,10 @@ src/
   gtr.ts                 gtr subprocess wrapper, parsers, validators
   ff-check.ts            FF-1 fitness function (CI helper)
   tools/
-    worktree.ts          Tool definitions, schemas, handlers, dispatch table
+    worktree.ts          Tool definitions, schemas, handlers, makeHandlers factory
   __tests__/
     parsers.test.ts      Parser unit tests (parsePorcelainList, parseGitStatus)
-    schemas.test.ts      Schema validation tests (confirm gate, coercion)
+    schemas.test.ts      Schema validation tests (confirm gate, coercion, cwd model)
     integration.test.ts  Live gtr integration tests (skipped if gtr not on PATH)
 .github/
   workflows/

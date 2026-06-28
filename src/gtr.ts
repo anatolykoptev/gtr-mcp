@@ -149,21 +149,13 @@ async function runGitCommand(
 }
 
 /**
- * Validate that repoPath is a real git repository.
- * Throws GtrError with an actionable message if not.
+ * Return the canonical top-level directory of the git repository at `cwd`.
+ * Used once at server startup: doubles as the not-a-git-repo check (it rejects
+ * when `cwd` is outside a repo) and as the value named in the startup banner.
  */
-export async function validateRepoPath(repoPath: string): Promise<void> {
-  try {
-    await runGitCommand(["rev-parse", "--git-dir"], repoPath);
-  } catch {
-    throw new GtrError(
-      128,
-      "",
-      "",
-      `Not a git repository: ${repoPath}. ` +
-        `Ensure the path is an absolute path to a git repository root and try again.`
-    );
-  }
+export async function getRepoToplevel(cwd: string): Promise<string> {
+  const { stdout } = await runGitCommand(["rev-parse", "--show-toplevel"], cwd);
+  return stdout.trim();
 }
 
 /**
@@ -173,10 +165,11 @@ export async function validateRepoPath(repoPath: string): Promise<void> {
 export async function resolveWorktreePath(
   branch: string,
   repoPath: string,
-  gtrBin?: string
+  gtrBin?: string,
+  timeoutMs?: number
 ): Promise<string> {
   try {
-    const result = await runGtr(["go", branch], repoPath, gtrBin);
+    const result = await runGtr(["go", branch], repoPath, gtrBin, timeoutMs);
     return result.stdout.trim();
   } catch (err) {
     if (err instanceof GtrError) {
