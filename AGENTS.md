@@ -3,6 +3,12 @@
 This file teaches AI agents when and how to use git worktrees via the `gtr-mcp` MCP server.
 Import it into your project's AGENTS.md or reference it in your system prompt.
 
+## Repo context
+
+gtr-mcp operates on the git repository at the working directory it was launched in.
+**You do not pass a `repo_path` to any tool.** The server is cwd-bound; the operator
+sets the correct repository by configuring the MCP client's `cwd` field.
+
 ## When to use a worktree
 
 Use `worktree_create` when:
@@ -38,11 +44,11 @@ in the session — always verify with `worktree_list` before acting on it.
 They require `confirm: true` in the call:
 
 ```json
-{ "repo_path": "/path/to/repo", "branch": "feature-x", "confirm": true }
+{ "branch": "feature-x", "confirm": true }
 ```
 
 Only pass `confirm: true` when the user has explicitly asked you to delete or clean worktrees.
-When in doubt, use `worktree_clean { dry_run: true }` to preview first.
+When in doubt, use `worktree_clean { "dry_run": true }` to preview first.
 
 ## Trust model
 
@@ -51,17 +57,6 @@ You cannot trust a repo — this is a human security decision. If `worktree_crea
 `hooks_ran: false`, a human must run `git gtr trust` before hooks fire.
 
 Never auto-invoke `git gtr trust`. The server does not expose a trust tool for this reason.
-
-## The exec tool
-
-`worktree_exec` is disabled by default. Even when enabled (`GTR_MCP_ENABLE_EXEC=1`), prefer
-your shell tool instead:
-
-```bash
-cd "$(git gtr go branch-name)" && your-command
-```
-
-Using `worktree_exec` adds a layer of indirection with no safety benefit over your native shell.
 
 ## Naming conventions
 
@@ -73,7 +68,7 @@ in the `worktree_create` response is the actual filesystem path to use with your
 Use `worktree_path` to convert a branch name or ID to its absolute filesystem path:
 
 ```json
-{ "repo_path": "/path/to/repo", "branch": "feature-x" }
+{ "branch": "feature-x" }
 ```
 
 Returns `{ "path": "/path/to/repo-worktrees/feature-x", "branch": "feature-x" }`. Read-only.
@@ -83,7 +78,7 @@ Returns `{ "path": "/path/to/repo-worktrees/feature-x", "branch": "feature-x" }`
 Use `worktree_copy` to copy config files, `.env`, or other gitignored files into a fresh worktree:
 
 ```json
-{ "repo_path": "/path/to/repo", "from": "main", "targets": ["feature-x"], "patterns": [".env", "*.local"], "dry_run": true }
+{ "from": "main", "targets": ["feature-x"], "patterns": [".env", "*.local"], "dry_run": true }
 ```
 
 - Always run with `dry_run: true` first to preview what would be copied

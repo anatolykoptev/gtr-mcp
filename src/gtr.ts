@@ -149,21 +149,32 @@ async function runGitCommand(
 }
 
 /**
- * Validate that repoPath is a real git repository.
- * Throws GtrError with an actionable message if not.
+ * Validate that `cwd` is inside a git repository.
+ * Used once at server startup to warn when the server's working directory is
+ * not a git repo. Throws GtrError with an actionable message if not.
  */
-export async function validateRepoPath(repoPath: string): Promise<void> {
+export async function validateRepoCwd(cwd: string): Promise<void> {
   try {
-    await runGitCommand(["rev-parse", "--git-dir"], repoPath);
+    await runGitCommand(["rev-parse", "--git-dir"], cwd);
   } catch {
     throw new GtrError(
       128,
       "",
       "",
-      `Not a git repository: ${repoPath}. ` +
-        `Ensure the path is an absolute path to a git repository root and try again.`
+      `Not a git repository: "${cwd}". ` +
+        `gtr-mcp operates on the git repository at its working directory. ` +
+        `Start gtr-mcp with the MCP client's cwd set to a git repository root.`
     );
   }
+}
+
+/**
+ * Return the canonical top-level directory of the git repository at `cwd`.
+ * Used for the startup banner (stderr one-liner naming the resolved repo).
+ */
+export async function getRepoToplevel(cwd: string): Promise<string> {
+  const { stdout } = await runGitCommand(["rev-parse", "--show-toplevel"], cwd);
+  return stdout.trim();
 }
 
 /**

@@ -9,8 +9,9 @@
  * Every DESTRUCTIVE tool requires { confirm: true } in its input to prevent
  * accidental execution by an agent that inferred the wrong intent.
  *
- * exec tool: excluded from BASE_TOOLS; opt-in via GTR_MCP_ENABLE_EXEC=1.
- * Use getTools(enableExec) to get the appropriate tool list.
+ * Repo resolution: gtr-mcp operates on the git repository at the working
+ * directory it was launched in (repoCwd, captured once at startup). Tools
+ * have no repo_path parameter — the server is cwd-bound, one server per repo.
  *
  * --yes flag wiring:
  *   mv (rename): always pass --yes
@@ -18,7 +19,6 @@
  *   clean:       pass --yes ONLY when NOT dry_run
  */
 
-import path from "path";
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
@@ -27,7 +27,6 @@ import {
   parsePorcelainList,
   parseGitStatus,
   resolveWorktreePath,
-  validateRepoPath,
   GtrError,
   GtrNotFoundError,
   GtrTimeoutError,
@@ -105,17 +104,25 @@ export function detectHooksRan(stdout: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Handler context — injected at construction, never read from process.cwd()
+// ---------------------------------------------------------------------------
+
+export interface HandlerContext {
+  /** Absolute path to the git repository root (process.cwd() captured at startup). */
+  repoCwd: string;
+  /** Path to the gtr binary, or undefined to use `git gtr` via PATH. */
+  gtrBin?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Tool schemas (used for both MCP Tool definitions and runtime validation)
 // ---------------------------------------------------------------------------
 
 // worktree_list – SAFE
-export const worktreeListSchema = z.object({
-  repo_path: z.string().describe("Absolute path to the git repository root"),
-});
+export const worktreeListSchema = z.object({});
 
 // worktree_create – MODIFY
 export const worktreeCreateSchema = z.object({
-  repo_path: z.string().describe("Absolute path to the git repository root"),
   branch: z
     .string()
     .refine((v) => !v.startsWith("-"), {
@@ -172,7 +179,6 @@ export const worktreeCreateSchema = z.object({
 
 // worktree_remove – DESTRUCTIVE
 export const worktreeRemoveSchema = z.object({
-  repo_path: z.string().describe("Absolute path to the git repository root"),
   branch: z
     .string()
     .refine((v) => !v.startsWith("-"), {
@@ -194,24 +200,8 @@ export const worktreeRemoveSchema = z.object({
     .describe("Must be set to true to confirm this destructive operation"),
 });
 
-// worktree_exec – MODIFY (can have side effects inside the worktree)
-export const worktreeExecSchema = z.object({
-  repo_path: z.string().describe("Absolute path to the git repository root"),
-  branch: z
-    .string()
-    .refine((v) => !v.startsWith("-"), {
-      message: "branch must not start with '-' (option-injection guard)",
-    })
-    .describe("Branch name (or worktree ID) to run the command in"),
-  command: z
-    .array(z.string())
-    .min(1)
-    .describe("Command and arguments to run inside the worktree directory"),
-});
-
 // worktree_status – SAFE
 export const worktreeStatusSchema = z.object({
-  repo_path: z.string().describe("Absolute path to the git repository root"),
   branch: z
     .string()
     .refine((v) => !v.startsWith("-"), {
@@ -222,7 +212,6 @@ export const worktreeStatusSchema = z.object({
 
 // worktree_rename – MODIFY
 export const worktreeRenameSchema = z.object({
-  repo_path: z.string().describe("Absolute path to the git repository root"),
   old_branch: z
     .string()
     .refine((v) => !v.startsWith("-"), {
@@ -239,7 +228,6 @@ export const worktreeRenameSchema = z.object({
 
 // worktree_path – SAFE (read-only path resolver)
 export const worktreePathSchema = z.object({
-  repo_path: z.string().describe("Absolute path to the git repository root"),
   branch: z
     .string()
     .refine((v) => !v.startsWith("-"), {
@@ -252,7 +240,6 @@ export const worktreePathSchema = z.object({
 // pre-existing target files via our inputs — gtr copy's rm-paths (copy.sh) act only on
 // freshly-copied trees driven by the repo's trusted .gtrconfig, never on existing files)
 export const worktreeCopySchema = z.object({
-  repo_path: z.string().describe("Absolute path to the git repository root"),
   from: z
     .string()
     .refine((v) => !v.startsWith("-"), {
@@ -299,7 +286,6 @@ export const worktreeCopySchema = z.object({
 // confirm is required when (merged || closed) && !dry_run
 export const worktreeCleanSchema = z
   .object({
-    repo_path: z.string().describe("Absolute path to the git repository root"),
     merged: z
       .coerce
       .boolean()
@@ -343,13 +329,7 @@ const BASE_TOOLS: Tool[] = [
       "List all git worktrees in the repository. Returns structured data with path, branch, status, and whether each entry is the main checkout. SAFE – read-only.",
     inputSchema: {
       type: "object",
-      properties: {
-        repo_path: {
-          type: "string",
-          description: "Absolute path to the git repository root",
-        },
-      },
-      required: ["repo_path"],
+      properties: {},
     },
   },
   {
@@ -359,10 +339,6 @@ const BASE_TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        repo_path: {
-          type: "string",
-          description: "Absolute path to the git repository root",
-        },
         branch: {
           type: "string",
           description: "Branch name to create or check out",
@@ -396,7 +372,7 @@ const BASE_TOOLS: Tool[] = [
           description: "Override the worktree directory name",
         },
       },
-      required: ["repo_path", "branch"],
+      required: ["branch"],
     },
   },
   {
@@ -406,10 +382,6 @@ const BASE_TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        repo_path: {
-          type: "string",
-          description: "Absolute path to the git repository root",
-        },
         branch: {
           type: "string",
           description: "Branch name or worktree ID to remove",
@@ -428,7 +400,7 @@ const BASE_TOOLS: Tool[] = [
           description: "Must be true to confirm this destructive operation",
         },
       },
-      required: ["repo_path", "branch", "confirm"],
+      required: ["branch", "confirm"],
     },
   },
   {
@@ -438,16 +410,12 @@ const BASE_TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        repo_path: {
-          type: "string",
-          description: "Absolute path to the git repository root",
-        },
         branch: {
           type: "string",
           description: "Branch name or worktree ID to inspect",
         },
       },
-      required: ["repo_path", "branch"],
+      required: ["branch"],
     },
   },
   {
@@ -457,10 +425,6 @@ const BASE_TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        repo_path: {
-          type: "string",
-          description: "Absolute path to the git repository root",
-        },
         old_branch: {
           type: "string",
           description: "Current branch name or worktree identifier",
@@ -470,7 +434,7 @@ const BASE_TOOLS: Tool[] = [
           description: "New branch name",
         },
       },
-      required: ["repo_path", "old_branch", "new_branch"],
+      required: ["old_branch", "new_branch"],
     },
   },
   {
@@ -480,16 +444,12 @@ const BASE_TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        repo_path: {
-          type: "string",
-          description: "Absolute path to the git repository root",
-        },
         branch: {
           type: "string",
           description: "Branch name or worktree identifier to resolve (e.g. 'main', 'feature/x', '1')",
         },
       },
-      required: ["repo_path", "branch"],
+      required: ["branch"],
     },
   },
   {
@@ -499,10 +459,6 @@ const BASE_TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        repo_path: {
-          type: "string",
-          description: "Absolute path to the git repository root",
-        },
         from: {
           type: "string",
           description: "Source worktree identifier (branch name, ID, or '1' for main)",
@@ -526,7 +482,7 @@ const BASE_TOOLS: Tool[] = [
           description: "Preview what would be copied without making changes",
         },
       },
-      required: ["repo_path", "from"],
+      required: ["from"],
     },
   },
   {
@@ -536,10 +492,6 @@ const BASE_TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        repo_path: {
-          type: "string",
-          description: "Absolute path to the git repository root",
-        },
         merged: {
           type: "boolean",
           description: "Remove worktrees with merged PRs",
@@ -558,62 +510,30 @@ const BASE_TOOLS: Tool[] = [
           description: "Required when merged or closed is set and dry_run is not",
         },
       },
-      required: ["repo_path"],
     },
   },
 ];
 
-export const EXEC_TOOL: Tool = {
-  name: "worktree_exec",
-  description:
-    "Run an arbitrary command inside a worktree directory. The command runs with the worktree as its cwd. Exit code and output are returned. MODIFY – side effects depend on the command. DISABLED by default; set GTR_MCP_ENABLE_EXEC=1 to enable. Prefer your shell tool over this.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      repo_path: {
-        type: "string",
-        description: "Absolute path to the git repository root",
-      },
-      branch: {
-        type: "string",
-        description: "Branch name or worktree ID to run the command in",
-      },
-      command: {
-        type: "array",
-        items: { type: "string" },
-        minItems: 1,
-        description: "Command and arguments to execute",
-      },
-    },
-    required: ["repo_path", "branch", "command"],
-  },
-};
-
 /**
  * Return the tool list for this server instance.
- * exec is excluded unless explicitly opted in.
  */
-export function getTools(enableExec: boolean): Tool[] {
-  return [...BASE_TOOLS, ...(enableExec ? [EXEC_TOOL] : [])];
+export function getTools(): Tool[] {
+  return BASE_TOOLS;
 }
 
-// Keep TOOLS export for backwards compat (default: exec excluded)
-export const TOOLS: Tool[] = BASE_TOOLS;
-
 // ---------------------------------------------------------------------------
-// Handlers
+// Private handlers — (input, ctx) shape; exported only via makeHandlers
 // ---------------------------------------------------------------------------
 
-export async function handleWorktreeList(
-  input: unknown
+async function handleWorktreeList(
+  input: unknown,
+  ctx: HandlerContext
 ): Promise<ToolResult> {
   const parsed = worktreeListSchema.safeParse(input);
   if (!parsed.success) return fail("Invalid input", { issues: parsed.error.issues });
 
-  const { repo_path } = parsed.data;
   try {
-    await validateRepoPath(repo_path);
-    const result = await runGtr(["list", "--porcelain"], repo_path, undefined, TIMEOUT_READ);
+    const result = await runGtr(["list", "--porcelain"], ctx.repoCwd, ctx.gtrBin, TIMEOUT_READ);
     const entries: WorktreeEntry[] = parsePorcelainList(result.stdout);
     return ok({ worktrees: entries, count: entries.length });
   } catch (err) {
@@ -621,18 +541,17 @@ export async function handleWorktreeList(
   }
 }
 
-export async function handleWorktreeCreate(
-  input: unknown
+async function handleWorktreeCreate(
+  input: unknown,
+  ctx: HandlerContext
 ): Promise<ToolResult> {
   const parsed = worktreeCreateSchema.safeParse(input);
   if (!parsed.success) return fail("Invalid input", { issues: parsed.error.issues });
 
-  const { repo_path, branch, from_ref, from_current, no_copy, no_hooks, no_fetch, name, folder } =
+  const { branch, from_ref, from_current, no_copy, no_hooks, no_fetch, name, folder } =
     parsed.data;
 
   try {
-    await validateRepoPath(repo_path);
-
     const args: string[] = ["new", branch, "--yes"];
     if (from_ref) args.push("--from", from_ref);
     if (from_current) args.push("--from-current");
@@ -642,7 +561,7 @@ export async function handleWorktreeCreate(
     if (folder) args.push("--folder", folder);
     else if (name) args.push("--folder", name);
 
-    const result = await runGtr(args, repo_path, undefined, TIMEOUT_MODIFY);
+    const result = await runGtr(args, ctx.repoCwd, ctx.gtrBin, TIMEOUT_MODIFY);
 
     // Extract the created path from gtr output ("Worktree created: <path>")
     const pathMatch = result.stdout.match(/Worktree created:\s*(.+)/);
@@ -669,26 +588,25 @@ export async function handleWorktreeCreate(
   }
 }
 
-export async function handleWorktreeRemove(
-  input: unknown
+async function handleWorktreeRemove(
+  input: unknown,
+  ctx: HandlerContext
 ): Promise<ToolResult> {
   const parsed = worktreeRemoveSchema.safeParse(input);
   if (!parsed.success) return fail("Invalid input", { issues: parsed.error.issues });
 
   // confirm: true is enforced by the Zod schema (z.literal(true)), so if we
   // reach here the caller has explicitly confirmed.
-  const { repo_path, branch, delete_branch, force } = parsed.data;
+  const { branch, delete_branch, force } = parsed.data;
 
   try {
-    await validateRepoPath(repo_path);
-
     // --yes is passed ONLY when delete_branch is true (removes the branch ref).
     // Without delete_branch, --yes is not needed and would be incorrect.
     const args: string[] = ["rm", branch];
     if (delete_branch) args.push("--yes"); // --yes confirms branch deletion
     if (force) args.push("--force");
 
-    const result = await runGtr(args, repo_path, undefined, TIMEOUT_MODIFY);
+    const result = await runGtr(args, ctx.repoCwd, ctx.gtrBin, TIMEOUT_MODIFY);
     return ok({
       success: true,
       branch,
@@ -700,55 +618,17 @@ export async function handleWorktreeRemove(
   }
 }
 
-export async function handleWorktreeExec(
-  input: unknown
-): Promise<ToolResult> {
-  const parsed = worktreeExecSchema.safeParse(input);
-  if (!parsed.success) return fail("Invalid input", { issues: parsed.error.issues });
-
-  const { repo_path, branch, command } = parsed.data;
-
-  try {
-    await validateRepoPath(repo_path);
-
-    // gtr run <branch> <cmd> [args...]
-    const args = ["run", branch, "--", ...command];
-    const result = await runGtr(args, repo_path, undefined, TIMEOUT_MODIFY);
-    return ok({
-      success: true,
-      branch,
-      command,
-      stdout: result.stdout,
-      stderr: result.stderr,
-    });
-  } catch (err) {
-    if (err instanceof GtrError) {
-      // Propagate the command's exit code and output rather than treating it
-      // as a gtr-level error. The caller can inspect exitCode to decide.
-      return ok({
-        success: false,
-        branch,
-        command,
-        exitCode: err.exitCode,
-        stdout: err.stdout,
-        stderr: err.stderr,
-      });
-    }
-    return handleGtrError(err);
-  }
-}
-
-export async function handleWorktreeStatus(
-  input: unknown
+async function handleWorktreeStatus(
+  input: unknown,
+  ctx: HandlerContext
 ): Promise<ToolResult> {
   const parsed = worktreeStatusSchema.safeParse(input);
   if (!parsed.success) return fail("Invalid input", { issues: parsed.error.issues });
 
-  const { repo_path, branch } = parsed.data;
+  const { branch } = parsed.data;
   try {
-    await validateRepoPath(repo_path);
     // Resolve the physical path first via gtr go
-    const worktreePath = await resolveWorktreePath(branch, repo_path);
+    const worktreePath = await resolveWorktreePath(branch, ctx.repoCwd, ctx.gtrBin);
     const result = await runGitStatus(worktreePath);
     const status: GitStatusResult = parseGitStatus(result.stdout);
     return ok({ worktree_path: worktreePath, status });
@@ -757,20 +637,19 @@ export async function handleWorktreeStatus(
   }
 }
 
-export async function handleWorktreeRename(
-  input: unknown
+async function handleWorktreeRename(
+  input: unknown,
+  ctx: HandlerContext
 ): Promise<ToolResult> {
   const parsed = worktreeRenameSchema.safeParse(input);
   if (!parsed.success) return fail("Invalid input", { issues: parsed.error.issues });
 
-  const { repo_path, old_branch, new_branch } = parsed.data;
+  const { old_branch, new_branch } = parsed.data;
 
   try {
-    await validateRepoPath(repo_path);
-
     // --yes always passed for rename (mv confirms the rename atomically)
     const args = ["mv", old_branch, new_branch, "--yes"];
-    const result = await runGtr(args, repo_path, undefined, TIMEOUT_MODIFY);
+    const result = await runGtr(args, ctx.repoCwd, ctx.gtrBin, TIMEOUT_MODIFY);
     return ok({
       success: true,
       old_branch,
@@ -782,17 +661,16 @@ export async function handleWorktreeRename(
   }
 }
 
-export async function handleWorktreeClean(
-  input: unknown
+async function handleWorktreeClean(
+  input: unknown,
+  ctx: HandlerContext
 ): Promise<ToolResult> {
   const parsed = worktreeCleanSchema.safeParse(input);
   if (!parsed.success) return fail("Invalid input", { issues: parsed.error.issues });
 
-  const { repo_path, merged, closed, dry_run } = parsed.data;
+  const { merged, closed, dry_run } = parsed.data;
 
   try {
-    await validateRepoPath(repo_path);
-
     const args: string[] = ["clean"];
     if (merged) args.push("--merged");
     if (closed) args.push("--closed");
@@ -808,36 +686,37 @@ export async function handleWorktreeClean(
       args.push("--yes");
     }
 
-    const result = await runGtr(args, repo_path, undefined, TIMEOUT_READ);
+    const result = await runGtr(args, ctx.repoCwd, ctx.gtrBin, TIMEOUT_READ);
     return ok({ success: true, output: result.stdout.trim() });
   } catch (err) {
     return handleGtrError(err);
   }
 }
 
-export async function handleWorktreePath(
-  input: unknown
+async function handleWorktreePath(
+  input: unknown,
+  ctx: HandlerContext
 ): Promise<ToolResult> {
   const parsed = worktreePathSchema.safeParse(input);
   if (!parsed.success) return fail("Invalid input", { issues: parsed.error.issues });
 
-  const { repo_path, branch } = parsed.data;
+  const { branch } = parsed.data;
   try {
-    await validateRepoPath(repo_path);
-    const worktreePath = await resolveWorktreePath(branch, repo_path);
+    const worktreePath = await resolveWorktreePath(branch, ctx.repoCwd, ctx.gtrBin);
     return ok({ path: worktreePath, branch });
   } catch (err) {
     return handleGtrError(err);
   }
 }
 
-export async function handleWorktreeCopy(
-  input: unknown
+async function handleWorktreeCopy(
+  input: unknown,
+  ctx: HandlerContext
 ): Promise<ToolResult> {
   const parsed = worktreeCopySchema.safeParse(input);
   if (!parsed.success) return fail("Invalid input", { issues: parsed.error.issues });
 
-  const { repo_path, from, targets, patterns, all, dry_run } = parsed.data;
+  const { from, targets, patterns, all, dry_run } = parsed.data;
 
   // Must have targets or all=true
   const hasTargets = targets && targets.length > 0;
@@ -846,8 +725,6 @@ export async function handleWorktreeCopy(
   }
 
   try {
-    await validateRepoPath(repo_path);
-
     // Build argv: gtr copy [targets...] [--all] [--from <src>] [--dry-run] [-- <pattern>...]
     const args: string[] = ["copy"];
 
@@ -870,7 +747,7 @@ export async function handleWorktreeCopy(
       }
     }
 
-    const result = await runGtr(args, repo_path, undefined, TIMEOUT_READ);
+    const result = await runGtr(args, ctx.repoCwd, ctx.gtrBin, TIMEOUT_READ);
     return ok({
       success: true,
       from,
@@ -884,19 +761,24 @@ export async function handleWorktreeCopy(
 }
 
 // ---------------------------------------------------------------------------
-// Dispatch table
+// Handler factory — the public API for constructing the dispatch table
 // ---------------------------------------------------------------------------
 
 type Handler = (input: unknown) => Promise<ToolResult>;
 
-export const HANDLERS: Record<string, Handler> = {
-  worktree_list: handleWorktreeList,
-  worktree_create: handleWorktreeCreate,
-  worktree_remove: handleWorktreeRemove,
-  worktree_exec: handleWorktreeExec,
-  worktree_status: handleWorktreeStatus,
-  worktree_rename: handleWorktreeRename,
-  worktree_clean: handleWorktreeClean,
-  worktree_path: handleWorktreePath,
-  worktree_copy: handleWorktreeCopy,
-};
+/**
+ * Build the handler dispatch table, closing over the injected context.
+ * Tests inject a temp-repo path via ctx.repoCwd without process.chdir().
+ */
+export function makeHandlers(ctx: HandlerContext): Record<string, Handler> {
+  return {
+    worktree_list: (input) => handleWorktreeList(input, ctx),
+    worktree_create: (input) => handleWorktreeCreate(input, ctx),
+    worktree_remove: (input) => handleWorktreeRemove(input, ctx),
+    worktree_status: (input) => handleWorktreeStatus(input, ctx),
+    worktree_rename: (input) => handleWorktreeRename(input, ctx),
+    worktree_clean: (input) => handleWorktreeClean(input, ctx),
+    worktree_path: (input) => handleWorktreePath(input, ctx),
+    worktree_copy: (input) => handleWorktreeCopy(input, ctx),
+  };
+}

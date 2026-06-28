@@ -2,22 +2,20 @@
 /**
  * gtr-mcp — MCP server wrapping git-worktree-runner (gtr)
  *
+ * Repo resolution: gtr-mcp operates on the git repository at the working
+ * directory it is launched in (process.cwd()). Set your MCP client's `cwd`
+ * field to the repository root; one server instance = one repo context.
+ *
  * Configuration (env vars or CLI args):
- *   GTR_MCP_REPO_PATH    – default repository path used when callers omit repo_path
- *   GTR_MCP_REPO_BASE    – if set, repo_path must be under this directory
- *   GTR_BIN              – path to the gtr binary (default: uses `git gtr` via PATH)
- *   GTR_MCP_ENABLE_EXEC  – set to "1" to expose the worktree_exec tool
+ *   GTR_BIN  – path to the gtr binary (default: uses `git gtr` via PATH)
  *
  * CLI args (take precedence over env vars):
- *   --repo-path <path>   – default repository path
- *   --repo-base <path>   – base directory restriction
- *   --gtr-bin <path>     – path to the gtr binary
+ *   --gtr-bin <path>  – path to the gtr binary
  *
  * Transport: stdio (default for local MCP servers; works with Claude Desktop
  * and any MCP-compatible client).
  */
 
-import path from "path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -26,9 +24,8 @@ import {
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { getTools, HANDLERS } from "./tools/worktree.js";
-import { checkGtrAvailable, GtrNotFoundError, validateRepoPath } from "./gtr.js";
-import { validateRepoBase } from "./paths.js";
+import { getTools, makeHandlers } from "./tools/worktree.js";
+import { checkGtrAvailable, GtrNotFoundError, getRepoToplevel } from "./gtr.js";
 
 // ---------------------------------------------------------------------------
 // Prompt content
@@ -36,7 +33,12 @@ import { validateRepoBase } from "./paths.js";
 
 const GTR_WORKFLOW_PROMPT = `# gtr Worktree Workflow Guide
 
-Use git worktrees (via gtr) when:
+## Repo context
+
+gtr-mcp operates on the git repository at the working directory it was launched
+in. You do not pass a repo_path — the server is cwd-bound (one server = one repo).
+
+Use worktrees when:
 - Another agent or process holds the main checkout and you need parallel work
 - Starting a risky refactor you may want to abandon without touching main
 - Running tests on a branch while main stays at a known-good state
@@ -45,10 +47,10 @@ Use git worktrees (via gtr) when:
 ## Standard loop
 
 1. \`worktree_list\` — always start here; it is the source of truth
-2. \`worktree_create {repo_path, branch}\` — creates worktree + optionally a new branch
+2. \`worktree_create {branch}\` — creates worktree + optionally a new branch
 3. Work in the worktree (use your shell tools with the returned \`worktree_path\`)
-4. \`worktree_status {repo_path, branch}\` — check staged/unstaged/untracked before cleanup
-5. \`worktree_remove {repo_path, branch, confirm: true}\` — only when explicitly asked to delete
+4. \`worktree_status {branch}\` — check staged/unstaged/untracked before cleanup
+5. \`worktree_remove {branch, confirm: true}\` — only when explicitly asked to delete
 
 ## Safety contract
 
@@ -63,24 +65,19 @@ Use git worktrees (via gtr) when:
 - You cannot trust a repo's hooks — a human must do this out-of-band
 - If hooks were skipped, the response will say \`hooks_ran: false\` with a remediation message
 
-## exec tool
-
-- \`worktree_exec\` is disabled by default (set \`GTR_MCP_ENABLE_EXEC=1\` to enable)
-- Even when enabled, use your shell tool instead — exec is redundant and widens the trust surface
-
 ## Path resolution
 
 - \`worktree_status\` and \`worktree_remove\` accept the branch name; gtr resolves to the physical path
 - The \`worktree_path\` in \`worktree_create\` response is the actual filesystem path
 - \`worktree_list\` is authoritative — use it when unsure which worktree exists
-- \`worktree_path {repo_path, branch}\` resolves any branch/identifier to its absolute filesystem path without other side effects
+- \`worktree_path {branch}\` resolves any branch/identifier to its absolute filesystem path without other side effects
 
 ## Seeding a new worktree with ignored files
 
 Use \`worktree_copy\` to copy gitignored config or .env files from one worktree to another:
 
 \`\`\`
-worktree_copy {repo_path, from: "main", targets: ["feature-x"], patterns: [".env", "*.local"], dry_run: true}
+worktree_copy {from: "main", targets: ["feature-x"], patterns: [".env", "*.local"], dry_run: true}
 \`\`\`
 
 - Always run with \`dry_run: true\` first to preview
@@ -93,30 +90,20 @@ worktree_copy {repo_path, from: "main", targets: ["feature-x"], patterns: [".env
 // ---------------------------------------------------------------------------
 
 interface ServerConfig {
-  repoPath: string | null;
-  repoBase: string | null;
   gtrBin: string | null;
-  enableExec: boolean;
 }
 
 function parseArgs(): ServerConfig {
   const args = process.argv.slice(2);
-  let repoPath = process.env["GTR_MCP_REPO_PATH"] ?? process.env["GTR_REPO_PATH"] ?? null;
-  let repoBase = process.env["GTR_MCP_REPO_BASE"] ?? null;
   let gtrBin = process.env["GTR_BIN"] ?? null;
-  const enableExec = process.env["GTR_MCP_ENABLE_EXEC"] === "1";
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--repo-path" && args[i + 1]) {
-      repoPath = args[++i];
-    } else if (args[i] === "--repo-base" && args[i + 1]) {
-      repoBase = args[++i];
-    } else if (args[i] === "--gtr-bin" && args[i + 1]) {
+    if (args[i] === "--gtr-bin" && args[i + 1]) {
       gtrBin = args[++i];
     }
   }
 
-  return { repoPath, repoBase, gtrBin, enableExec };
+  return { gtrBin };
 }
 
 // ---------------------------------------------------------------------------
@@ -124,8 +111,23 @@ function parseArgs(): ServerConfig {
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  const config = parseArgs();
-  const { repoPath, repoBase, gtrBin, enableExec } = config;
+  const { gtrBin } = parseArgs();
+
+  // Capture the repo cwd ONCE at startup — this is the resolved repo context
+  // for all tool calls. No per-call repo_path; the model is 1 server = 1 repo.
+  const repoCwd = process.cwd();
+
+  // Warn clearly (non-fatal) if cwd is not a git repository
+  let repoToplevel: string | null = null;
+  try {
+    repoToplevel = await getRepoToplevel(repoCwd);
+  } catch {
+    process.stderr.write(
+      `gtr-mcp warning: "${repoCwd}" is not a git repository. ` +
+      `gtr-mcp operates on the git repository at its working directory; ` +
+      `start gtr-mcp with the MCP client's cwd set to a git repository root.\n`
+    );
+  }
 
   // Fail fast: gtr must be reachable before we accept any connections
   try {
@@ -138,12 +140,14 @@ async function main(): Promise<void> {
     throw err;
   }
 
-  const tools = getTools(enableExec);
+  // Build the handler dispatch table, injecting the resolved cwd
+  const handlers = makeHandlers({ repoCwd, gtrBin: gtrBin ?? undefined });
+  const tools = getTools();
 
   const server = new Server(
     {
       name: "gtr-mcp",
-      version: "0.3.0",
+      version: "0.4.0",
     },
     {
       capabilities: {
@@ -195,56 +199,7 @@ async function main(): Promise<void> {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: rawArgs } = request.params;
 
-    // Inject server-level repo_path default if caller did not provide one
-    let args =
-      repoPath && rawArgs && typeof rawArgs === "object" && !("repo_path" in rawArgs)
-        ? { repo_path: repoPath, ...rawArgs }
-        : rawArgs;
-
-    // Validate repo_path against repo_base restriction (if configured)
-    if (
-      args &&
-      typeof args === "object" &&
-      "repo_path" in args &&
-      typeof (args as Record<string, unknown>)["repo_path"] === "string"
-    ) {
-      const callRepoPath = (args as Record<string, unknown>)["repo_path"] as string;
-      if (repoBase) {
-        try {
-          validateRepoBase(callRepoPath, repoBase);
-        } catch (err) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  error: String(err),
-                }),
-              },
-            ],
-            isError: true,
-          };
-        }
-      }
-      // Per-call repo_path validation via git rev-parse
-      try {
-        await validateRepoPath(callRepoPath);
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                error: String(err),
-              }),
-            },
-          ],
-          isError: true,
-        };
-      }
-    }
-
-    const handler = HANDLERS[name];
+    const handler = handlers[name];
     if (!handler) {
       return {
         content: [
@@ -258,7 +213,7 @@ async function main(): Promise<void> {
     }
 
     try {
-      return await handler(args);
+      return await handler(rawArgs);
     } catch (err) {
       return {
         content: [
@@ -279,10 +234,9 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  // Log to stderr (stdout is the MCP wire)
-  const repoMsg = repoPath ? ` (default repo: ${repoPath})` : "";
-  const execMsg = enableExec ? " [exec enabled]" : "";
-  process.stderr.write(`gtr-mcp v0.3.0 running${repoMsg}${execMsg}\n`);
+  // Startup banner — after connect so it lands after transport handshake
+  const repoMsg = repoToplevel ? ` repo=${repoToplevel}` : " (no repo context)";
+  process.stderr.write(`gtr-mcp v0.4.0 running${repoMsg}\n`);
 }
 
 main().catch((err) => {

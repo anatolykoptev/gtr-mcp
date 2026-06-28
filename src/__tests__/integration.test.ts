@@ -4,6 +4,9 @@
  * Tests are skipped gracefully when gtr is not available.
  *
  * FF-2 (no-hang): every tool call is wrapped in a 30s Promise.race timeout.
+ *
+ * v0.4.0 cwd model: handlers are created via makeHandlers({ repoCwd })
+ * — no repo_path argument on any tool call, no process.chdir() in tests.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -11,19 +14,14 @@ import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import {
-  handleWorktreeList,
-  handleWorktreeCreate,
-  handleWorktreeStatus,
-  handleWorktreeRemove,
-  handleWorktreePath,
-  handleWorktreeCopy,
-} from "../tools/worktree.js";
+import { makeHandlers } from "../tools/worktree.js";
+import { validateRepoCwd } from "../gtr.js";
 
 const TOOL_TIMEOUT = 30_000; // FF-2: 30s max per tool call
 
 let repoPath: string;
 let gtrAvailable = false;
+let handlers: ReturnType<typeof makeHandlers>;
 
 beforeAll(async () => {
   // Check if gtr is available
@@ -50,6 +48,10 @@ beforeAll(async () => {
     cwd: repoPath,
     stdio: "pipe",
   });
+
+  // Build handler table with the temp repo as repoCwd.
+  // This is the core of the cwd-injection model: no process.chdir(), no repo_path arg.
+  handlers = makeHandlers({ repoCwd: repoPath });
 });
 
 afterAll(() => {
@@ -71,32 +73,62 @@ async function withTimeout<T>(
   ]);
 }
 
-describe("integration: repo_path validation", () => {
-  it.skipIf(!gtrAvailable)("rejects non-git directory", async () => {
-    const result = await withTimeout(
-      handleWorktreeList({ repo_path: "/tmp" }),
-      "list /tmp"
-    );
-    const data = JSON.parse(result.content[0].text);
-    expect(data.error).toBeTruthy();
+// ---------------------------------------------------------------------------
+// Cwd model: non-git cwd surfaced as a tool error
+// ---------------------------------------------------------------------------
+
+describe("cwd model: non-git directory produces error", () => {
+  it("validateRepoCwd rejects /tmp (not a git repo)", async () => {
+    await expect(validateRepoCwd("/tmp")).rejects.toThrow(/not a git repository/i);
   });
 
-  it.skipIf(!gtrAvailable)("rejects path traversal attempt", async () => {
+  it("handler with non-git repoCwd returns error response (not a throw)", async () => {
+    // Handlers must not throw — they return a structured error result.
+    const badHandlers = makeHandlers({ repoCwd: "/tmp" });
     const result = await withTimeout(
-      handleWorktreeList({ repo_path: repoPath + "/../../../etc" }),
-      "list path traversal"
+      badHandlers.worktree_list({}),
+      "list /tmp"
     );
     const data = JSON.parse(result.content[0].text);
     expect(data.error).toBeTruthy();
   });
 });
 
+// ---------------------------------------------------------------------------
+// Cwd model: repoCwd actually flows through to gtr (injection proof)
+// ---------------------------------------------------------------------------
+
+describe("cwd model: injected repoCwd drives gtr operations", () => {
+  it.skipIf(!gtrAvailable)(
+    "list returns main worktree rooted at the injected repoCwd",
+    async () => {
+      const result = await withTimeout(
+        handlers.worktree_list({}),
+        "list main"
+      );
+      const data = JSON.parse(result.content[0].text);
+      // If repoCwd wasn't threaded through, gtr would fail or return a different repo.
+      expect(data.count).toBeGreaterThanOrEqual(1);
+      expect(data.worktrees[0].isMain).toBe(true);
+      // The main worktree path resolves to (or under) the injected repoPath
+      expect(data.worktrees[0].path).toContain(
+        // On macOS /tmp is a symlink to /private/tmp; use basename as a loose check
+        path.basename(repoPath)
+      );
+    }
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Worktree lifecycle (no repo_path on any call)
+// ---------------------------------------------------------------------------
+
 describe("integration: worktree lifecycle", () => {
   const TEST_BRANCH = "gtr-mcp-it-test-branch";
 
   it.skipIf(!gtrAvailable)("list returns at least one worktree (main)", async () => {
     const result = await withTimeout(
-      handleWorktreeList({ repo_path: repoPath }),
+      handlers.worktree_list({}),
       "list main"
     );
     const data = JSON.parse(result.content[0].text);
@@ -106,7 +138,7 @@ describe("integration: worktree lifecycle", () => {
 
   it.skipIf(!gtrAvailable)("create returns success with worktree_path", async () => {
     const result = await withTimeout(
-      handleWorktreeCreate({ repo_path: repoPath, branch: TEST_BRANCH }),
+      handlers.worktree_create({ branch: TEST_BRANCH }),
       "create"
     );
     const data = JSON.parse(result.content[0].text);
@@ -116,7 +148,7 @@ describe("integration: worktree lifecycle", () => {
 
   it.skipIf(!gtrAvailable)("status returns correct branch after create", async () => {
     const result = await withTimeout(
-      handleWorktreeStatus({ repo_path: repoPath, branch: TEST_BRANCH }),
+      handlers.worktree_status({ branch: TEST_BRANCH }),
       "status"
     );
     const data = JSON.parse(result.content[0].text);
@@ -129,7 +161,7 @@ describe("integration: worktree lifecycle", () => {
   it.skipIf(!gtrAvailable)("remove WITHOUT confirm is rejected by schema", async () => {
     const result = await withTimeout(
       // @ts-expect-error — intentionally omitting confirm to test gate
-      handleWorktreeRemove({ repo_path: repoPath, branch: TEST_BRANCH }),
+      handlers.worktree_remove({ branch: TEST_BRANCH }),
       "remove no confirm"
     );
     const data = JSON.parse(result.content[0].text);
@@ -139,7 +171,7 @@ describe("integration: worktree lifecycle", () => {
 
   it.skipIf(!gtrAvailable)("worktree still exists after failed remove (gate held)", async () => {
     const result = await withTimeout(
-      handleWorktreeList({ repo_path: repoPath }),
+      handlers.worktree_list({}),
       "list after failed remove"
     );
     const data = JSON.parse(result.content[0].text);
@@ -149,8 +181,7 @@ describe("integration: worktree lifecycle", () => {
 
   it.skipIf(!gtrAvailable)("remove WITH confirm=true succeeds", async () => {
     const result = await withTimeout(
-      handleWorktreeRemove({
-        repo_path: repoPath,
+      handlers.worktree_remove({
         branch: TEST_BRANCH,
         confirm: true,
       }),
@@ -163,7 +194,7 @@ describe("integration: worktree lifecycle", () => {
 
   it.skipIf(!gtrAvailable)("worktree no longer in list after remove", async () => {
     const result = await withTimeout(
-      handleWorktreeList({ repo_path: repoPath }),
+      handlers.worktree_list({}),
       "list after remove"
     );
     const data = JSON.parse(result.content[0].text);
@@ -172,12 +203,16 @@ describe("integration: worktree lifecycle", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// worktree_path
+// ---------------------------------------------------------------------------
+
 describe("integration: worktree_path", () => {
   const PATH_BRANCH = "gtr-mcp-it-path-branch";
 
   it.skipIf(!gtrAvailable)("resolves main repo path via identifier '1'", async () => {
     const result = await withTimeout(
-      handleWorktreePath({ repo_path: repoPath, branch: "1" }),
+      handlers.worktree_path({ branch: "1" }),
       "path main"
     );
     const data = JSON.parse(result.content[0].text);
@@ -189,12 +224,12 @@ describe("integration: worktree_path", () => {
   it.skipIf(!gtrAvailable)("resolves path of a created worktree", async () => {
     // Create a worktree first
     await withTimeout(
-      handleWorktreeCreate({ repo_path: repoPath, branch: PATH_BRANCH }),
+      handlers.worktree_create({ branch: PATH_BRANCH }),
       "create for path test"
     );
 
     const result = await withTimeout(
-      handleWorktreePath({ repo_path: repoPath, branch: PATH_BRANCH }),
+      handlers.worktree_path({ branch: PATH_BRANCH }),
       "path"
     );
     const data = JSON.parse(result.content[0].text);
@@ -205,7 +240,7 @@ describe("integration: worktree_path", () => {
 
   it.skipIf(!gtrAvailable)("returns error for non-existent branch", async () => {
     const result = await withTimeout(
-      handleWorktreePath({ repo_path: repoPath, branch: "definitely-does-not-exist-xyz" }),
+      handlers.worktree_path({ branch: "definitely-does-not-exist-xyz" }),
       "path non-existent"
     );
     const data = JSON.parse(result.content[0].text);
@@ -214,11 +249,15 @@ describe("integration: worktree_path", () => {
 
   it.skipIf(!gtrAvailable)("cleanup: remove path-test worktree", async () => {
     await withTimeout(
-      handleWorktreeRemove({ repo_path: repoPath, branch: PATH_BRANCH, confirm: true }),
+      handlers.worktree_remove({ branch: PATH_BRANCH, confirm: true }),
       "remove path branch"
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// worktree_copy dry_run
+// ---------------------------------------------------------------------------
 
 describe("integration: worktree_copy dry_run", () => {
   const COPY_SRC = "gtr-mcp-it-copy-src";
@@ -227,18 +266,17 @@ describe("integration: worktree_copy dry_run", () => {
   it.skipIf(!gtrAvailable)("dry_run previews without copying (non-destructive gate)", async () => {
     // Create source and destination worktrees
     await withTimeout(
-      handleWorktreeCreate({ repo_path: repoPath, branch: COPY_SRC }),
+      handlers.worktree_create({ branch: COPY_SRC }),
       "create copy-src"
     );
     await withTimeout(
-      handleWorktreeCreate({ repo_path: repoPath, branch: COPY_DST }),
+      handlers.worktree_create({ branch: COPY_DST }),
       "create copy-dst"
     );
 
     // dry_run copy — must succeed (success:true) or return an expected no-files warning
     const result = await withTimeout(
-      handleWorktreeCopy({
-        repo_path: repoPath,
+      handlers.worktree_copy({
         from: COPY_SRC,
         targets: [COPY_DST],
         patterns: [".env"],
@@ -255,15 +293,19 @@ describe("integration: worktree_copy dry_run", () => {
 
   it.skipIf(!gtrAvailable)("cleanup: remove copy worktrees", async () => {
     await withTimeout(
-      handleWorktreeRemove({ repo_path: repoPath, branch: COPY_SRC, confirm: true }),
+      handlers.worktree_remove({ branch: COPY_SRC, confirm: true }),
       "remove copy-src"
     );
     await withTimeout(
-      handleWorktreeRemove({ repo_path: repoPath, branch: COPY_DST, confirm: true }),
+      handlers.worktree_remove({ branch: COPY_DST, confirm: true }),
       "remove copy-dst"
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// remove with delete_branch
+// ---------------------------------------------------------------------------
 
 describe("integration: remove with delete_branch", () => {
   const BRANCH_TO_DELETE = "gtr-mcp-it-delete-branch";
@@ -271,14 +313,13 @@ describe("integration: remove with delete_branch", () => {
   it.skipIf(!gtrAvailable)("create and remove with delete_branch=true", async () => {
     // Create first
     await withTimeout(
-      handleWorktreeCreate({ repo_path: repoPath, branch: BRANCH_TO_DELETE }),
+      handlers.worktree_create({ branch: BRANCH_TO_DELETE }),
       "create for delete"
     );
 
     // Remove with branch deletion
     const result = await withTimeout(
-      handleWorktreeRemove({
-        repo_path: repoPath,
+      handlers.worktree_remove({
         branch: BRANCH_TO_DELETE,
         confirm: true,
         delete_branch: true,
