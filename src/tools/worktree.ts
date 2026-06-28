@@ -628,7 +628,7 @@ async function handleWorktreeStatus(
   const { branch } = parsed.data;
   try {
     // Resolve the physical path first via gtr go
-    const worktreePath = await resolveWorktreePath(branch, ctx.repoCwd, ctx.gtrBin);
+    const worktreePath = await resolveWorktreePath(branch, ctx.repoCwd, ctx.gtrBin, TIMEOUT_READ);
     const result = await runGitStatus(worktreePath);
     const status: GitStatusResult = parseGitStatus(result.stdout);
     return ok({ worktree_path: worktreePath, status });
@@ -702,7 +702,7 @@ async function handleWorktreePath(
 
   const { branch } = parsed.data;
   try {
-    const worktreePath = await resolveWorktreePath(branch, ctx.repoCwd, ctx.gtrBin);
+    const worktreePath = await resolveWorktreePath(branch, ctx.repoCwd, ctx.gtrBin, TIMEOUT_READ);
     return ok({ path: worktreePath, branch });
   } catch (err) {
     return handleGtrError(err);

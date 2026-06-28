@@ -15,7 +15,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { makeHandlers } from "../tools/worktree.js";
-import { validateRepoCwd } from "../gtr.js";
+import { getRepoToplevel } from "../gtr.js";
 
 const TOOL_TIMEOUT = 30_000; // FF-2: 30s max per tool call
 
@@ -84,8 +84,8 @@ async function withTimeout<T>(
 // ---------------------------------------------------------------------------
 
 describe("cwd model: non-git directory produces error", () => {
-  it("validateRepoCwd rejects /tmp (not a git repo)", async () => {
-    await expect(validateRepoCwd("/tmp")).rejects.toThrow(/not a git repository/i);
+  it("getRepoToplevel rejects /tmp (the real startup not-a-git-repo path)", async () => {
+    await expect(getRepoToplevel("/tmp")).rejects.toThrow(/not a git repository/i);
   });
 
   it("handler with non-git repoCwd returns error response (not a throw)", async () => {

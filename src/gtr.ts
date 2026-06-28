@@ -149,28 +149,9 @@ async function runGitCommand(
 }
 
 /**
- * Validate that `cwd` is inside a git repository.
- * Used once at server startup to warn when the server's working directory is
- * not a git repo. Throws GtrError with an actionable message if not.
- */
-export async function validateRepoCwd(cwd: string): Promise<void> {
-  try {
-    await runGitCommand(["rev-parse", "--git-dir"], cwd);
-  } catch {
-    throw new GtrError(
-      128,
-      "",
-      "",
-      `Not a git repository: "${cwd}". ` +
-        `gtr-mcp operates on the git repository at its working directory. ` +
-        `Start gtr-mcp with the MCP client's cwd set to a git repository root.`
-    );
-  }
-}
-
-/**
  * Return the canonical top-level directory of the git repository at `cwd`.
- * Used for the startup banner (stderr one-liner naming the resolved repo).
+ * Used once at server startup: doubles as the not-a-git-repo check (it rejects
+ * when `cwd` is outside a repo) and as the value named in the startup banner.
  */
 export async function getRepoToplevel(cwd: string): Promise<string> {
   const { stdout } = await runGitCommand(["rev-parse", "--show-toplevel"], cwd);
@@ -184,10 +165,11 @@ export async function getRepoToplevel(cwd: string): Promise<string> {
 export async function resolveWorktreePath(
   branch: string,
   repoPath: string,
-  gtrBin?: string
+  gtrBin?: string,
+  timeoutMs?: number
 ): Promise<string> {
   try {
-    const result = await runGtr(["go", branch], repoPath, gtrBin);
+    const result = await runGtr(["go", branch], repoPath, gtrBin, timeoutMs);
     return result.stdout.trim();
   } catch (err) {
     if (err instanceof GtrError) {

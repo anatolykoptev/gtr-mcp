@@ -113,21 +113,26 @@ function parseArgs(): ServerConfig {
 async function main(): Promise<void> {
   const { gtrBin } = parseArgs();
 
-  // Capture the repo cwd ONCE at startup — this is the resolved repo context
-  // for all tool calls. No per-call repo_path; the model is 1 server = 1 repo.
-  const repoCwd = process.cwd();
-
-  // Warn clearly (non-fatal) if cwd is not a git repository
+  // Resolve the repo ONCE at startup and operate on its TOPLEVEL — this is the
+  // single repo context for every tool call (no per-call repo_path; 1 server =
+  // 1 repo). We normalize the launch cwd to the git toplevel so the value we
+  // thread into handlers is exactly the value reported in the startup banner,
+  // even when launched from a subdirectory of the repo.
+  const launchCwd = process.cwd();
   let repoToplevel: string | null = null;
   try {
-    repoToplevel = await getRepoToplevel(repoCwd);
+    repoToplevel = await getRepoToplevel(launchCwd);
   } catch {
     process.stderr.write(
-      `gtr-mcp warning: "${repoCwd}" is not a git repository. ` +
+      `gtr-mcp warning: "${launchCwd}" is not a git repository. ` +
       `gtr-mcp operates on the git repository at its working directory; ` +
       `start gtr-mcp with the MCP client's cwd set to a git repository root.\n`
     );
   }
+
+  // When cwd is not a git repo, fall back to the raw launch cwd so each tool
+  // call surfaces gtr's own clear "not a git repository" error (non-fatal boot).
+  const repoCwd = repoToplevel ?? launchCwd;
 
   // Fail fast: gtr must be reachable before we accept any connections
   try {
