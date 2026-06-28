@@ -9,7 +9,47 @@ import {
   worktreePathSchema,
   worktreeCopySchema,
   worktreeListSchema,
+  dispatchToolCall,
 } from "../tools/worktree.js";
+
+// ---------------------------------------------------------------------------
+// Wire-shape regression: MCP `arguments` is OPTIONAL, so a spec-compliant
+// client may omit it and the handler receives `undefined` — NOT `{}`. The
+// dispatch seam must coalesce undefined → {} so no-arg tools parse cleanly.
+// (The 0.4.0 redesign removed the universal repo_path requirement, exposing
+// this on worktree_list / worktree_clean. Tests that hand-feed `{}` mask it —
+// this one feeds the real wire shape, `undefined`.)
+// ---------------------------------------------------------------------------
+
+describe("dispatchToolCall coalesces omitted MCP arguments", () => {
+  it("passes {} to the handler when rawArgs is undefined", async () => {
+    let seen: unknown = "UNSET";
+    const stub = {
+      probe: async (input: unknown) => {
+        seen = input;
+        return { content: [{ type: "text" as const, text: "{}" }] };
+      },
+    };
+    await dispatchToolCall(stub, "probe", undefined);
+    expect(seen).toEqual({});
+  });
+
+  it("returns null for an unknown tool name", async () => {
+    expect(await dispatchToolCall({}, "nope", undefined)).toBeNull();
+  });
+
+  it("forwards real arguments unchanged when present", async () => {
+    let seen: unknown = "UNSET";
+    const stub = {
+      probe: async (input: unknown) => {
+        seen = input;
+        return { content: [{ type: "text" as const, text: "{}" }] };
+      },
+    };
+    await dispatchToolCall(stub, "probe", { branch: "x" });
+    expect(seen).toEqual({ branch: "x" });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // No repo_path anywhere — v0.4.0 cwd-native model

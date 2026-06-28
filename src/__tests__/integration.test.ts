@@ -14,7 +14,7 @@ import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { makeHandlers } from "../tools/worktree.js";
+import { makeHandlers, dispatchToolCall } from "../tools/worktree.js";
 import { getRepoToplevel } from "../gtr.js";
 
 const TOOL_TIMEOUT = 30_000; // FF-2: 30s max per tool call
@@ -121,6 +121,25 @@ describe("cwd model: injected repoCwd drives gtr operations", () => {
         // On macOS /tmp is a symlink to /private/tmp; use basename as a loose check
         path.basename(repoPath)
       );
+    }
+  );
+
+  it.skipIf(!gtrAvailable)(
+    "worktree_list succeeds via the dispatch seam with OMITTED arguments (undefined)",
+    async () => {
+      // The real MCP wire shape when a client omits `arguments`: rawArgs===undefined.
+      // dispatchToolCall must coalesce it to {} so the authoritative discovery tool
+      // does not return 'Invalid input'. Hand-feeding {} (as other tests do) would
+      // mask the regression this locks.
+      const result = await withTimeout(
+        dispatchToolCall(handlers, "worktree_list", undefined) as Promise<{
+          content: { text: string }[];
+        }>,
+        "list undefined-args"
+      );
+      const data = JSON.parse(result.content[0].text);
+      expect(data.error).toBeUndefined();
+      expect(data.count).toBeGreaterThanOrEqual(1);
     }
   );
 });

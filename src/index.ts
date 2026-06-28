@@ -24,7 +24,7 @@ import {
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { getTools, makeHandlers } from "./tools/worktree.js";
+import { getTools, makeHandlers, dispatchToolCall } from "./tools/worktree.js";
 import { checkGtrAvailable, GtrNotFoundError, getRepoToplevel } from "./gtr.js";
 
 // ---------------------------------------------------------------------------
@@ -204,21 +204,23 @@ async function main(): Promise<void> {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: rawArgs } = request.params;
 
-    const handler = handlers[name];
-    if (!handler) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({ error: `Unknown tool: ${name}` }),
-          },
-        ],
-        isError: true,
-      };
-    }
-
     try {
-      return await handler(rawArgs);
+      // dispatchToolCall coalesces the OPTIONAL MCP `arguments` field (undefined
+      // when a client omits it) to {} so no-arg tools parse cleanly; returns
+      // null for an unknown tool name.
+      const result = await dispatchToolCall(handlers, name, rawArgs);
+      if (result === null) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ error: `Unknown tool: ${name}` }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      return result;
     } catch (err) {
       return {
         content: [

@@ -518,7 +518,9 @@ const BASE_TOOLS: Tool[] = [
  * Return the tool list for this server instance.
  */
 export function getTools(): Tool[] {
-  return BASE_TOOLS;
+  // Return a copy — never hand callers a mutable reference to the module-level
+  // BASE_TOOLS array.
+  return [...BASE_TOOLS];
 }
 
 // ---------------------------------------------------------------------------
@@ -781,4 +783,25 @@ export function makeHandlers(ctx: HandlerContext): Record<string, Handler> {
     worktree_path: (input) => handleWorktreePath(input, ctx),
     worktree_copy: (input) => handleWorktreeCopy(input, ctx),
   };
+}
+
+/**
+ * Dispatch one MCP tool call to its handler.
+ *
+ * Returns null when `name` is unknown (the caller renders the unknown-tool
+ * error). Crucially, `CallToolRequest.params.arguments` is OPTIONAL in the MCP
+ * spec — a compliant client may omit it, so `rawArgs` can be undefined. We
+ * coalesce to {} HERE, at the single dispatch seam, so the no-arg tools
+ * (worktree_list, worktree_clean) parse cleanly while tools with required
+ * fields still fail correctly on {}. Lives here (a side-effect-free module) so
+ * it is unit-testable without booting the stdio server in index.ts.
+ */
+export async function dispatchToolCall(
+  handlers: Record<string, Handler>,
+  name: string,
+  rawArgs: unknown
+): Promise<ToolResult | null> {
+  const handler = handlers[name];
+  if (!handler) return null;
+  return handler(rawArgs ?? {});
 }
