@@ -20,18 +20,24 @@ import { validateRepoCwd } from "../gtr.js";
 const TOOL_TIMEOUT = 30_000; // FF-2: 30s max per tool call
 
 let repoPath: string;
-let gtrAvailable = false;
 let handlers: ReturnType<typeof makeHandlers>;
 
-beforeAll(async () => {
-  // Check if gtr is available
+// Detect gtr SYNCHRONOUSLY at module load — before any it.skipIf() is
+// collected. vitest evaluates skipIf conditions at collection time, which runs
+// BEFORE beforeAll; probing inside beforeAll would leave gtrAvailable=false at
+// collection and skip every live test unconditionally (a silent coverage hole).
+const gtrAvailable = ((): boolean => {
   try {
     execFileSync("git", ["gtr", "--version"], { stdio: "pipe" });
-    gtrAvailable = true;
+    return true;
   } catch {
     console.log("gtr not available — skipping integration tests");
-    return;
+    return false;
   }
+})();
+
+beforeAll(async () => {
+  if (!gtrAvailable) return;
 
   // Create temp git repo
   repoPath = fs.mkdtempSync(path.join(os.tmpdir(), "gtr-mcp-it-"));
@@ -138,7 +144,7 @@ describe("integration: worktree lifecycle", () => {
 
   it.skipIf(!gtrAvailable)("create returns success with worktree_path", async () => {
     const result = await withTimeout(
-      handlers.worktree_create({ branch: TEST_BRANCH }),
+      handlers.worktree_create({ branch: TEST_BRANCH, from_current: true }),
       "create"
     );
     const data = JSON.parse(result.content[0].text);
@@ -224,7 +230,7 @@ describe("integration: worktree_path", () => {
   it.skipIf(!gtrAvailable)("resolves path of a created worktree", async () => {
     // Create a worktree first
     await withTimeout(
-      handlers.worktree_create({ branch: PATH_BRANCH }),
+      handlers.worktree_create({ branch: PATH_BRANCH, from_current: true }),
       "create for path test"
     );
 
@@ -266,11 +272,11 @@ describe("integration: worktree_copy dry_run", () => {
   it.skipIf(!gtrAvailable)("dry_run previews without copying (non-destructive gate)", async () => {
     // Create source and destination worktrees
     await withTimeout(
-      handlers.worktree_create({ branch: COPY_SRC }),
+      handlers.worktree_create({ branch: COPY_SRC, from_current: true }),
       "create copy-src"
     );
     await withTimeout(
-      handlers.worktree_create({ branch: COPY_DST }),
+      handlers.worktree_create({ branch: COPY_DST, from_current: true }),
       "create copy-dst"
     );
 
@@ -313,7 +319,7 @@ describe("integration: remove with delete_branch", () => {
   it.skipIf(!gtrAvailable)("create and remove with delete_branch=true", async () => {
     // Create first
     await withTimeout(
-      handlers.worktree_create({ branch: BRANCH_TO_DELETE }),
+      handlers.worktree_create({ branch: BRANCH_TO_DELETE, from_current: true }),
       "create for delete"
     );
 
