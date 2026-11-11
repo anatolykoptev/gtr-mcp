@@ -12,31 +12,19 @@ Built as a contribution to [issue #67](https://github.com/coderabbitai/git-workt
 
 ## Install
 
-### Via npx (no install)
+The package is not published to the npm registry, so install from source:
 
 ```bash
-cd /path/to/your/repo
-npx gtr-mcp
-```
-
-### Global install
-
-```bash
-npm install -g gtr-mcp
-cd /path/to/your/repo
-gtr-mcp
-```
-
-### From source
-
-```bash
-git clone https://github.com/coderabbitai/gtr-mcp
+git clone https://github.com/anatolykoptev/gtr-mcp
 cd gtr-mcp
 npm install
 npm run build
 cd /path/to/your/repo
 node /path/to/gtr-mcp/dist/index.js
 ```
+
+`npm install -g .` in the clone puts a `gtr-mcp` command on your PATH. The server speaks MCP over
+stdio, so you normally let your MCP client start it (see below) rather than run it by hand.
 
 ## How it works
 
@@ -57,8 +45,8 @@ Add to `~/.claude/claude_desktop_config.json` or your project `.mcp.json`:
 {
   "mcpServers": {
     "gtr": {
-      "command": "npx",
-      "args": ["gtr-mcp"],
+      "command": "node",
+      "args": ["/path/to/gtr-mcp/dist/index.js"],
       "cwd": "/path/to/your/repo"
     }
   }
@@ -72,8 +60,8 @@ Add to `~/.claude/claude_desktop_config.json` or your project `.mcp.json`:
   "mcp": {
     "servers": {
       "gtr": {
-        "command": "npx",
-        "args": ["gtr-mcp"],
+        "command": "node",
+        "args": ["/path/to/gtr-mcp/dist/index.js"],
         "cwd": "/path/to/your/repo"
       }
     }
@@ -87,13 +75,13 @@ Add to `~/.claude/claude_desktop_config.json` or your project `.mcp.json`:
 {
   "mcpServers": {
     "gtr-frontend": {
-      "command": "npx",
-      "args": ["gtr-mcp"],
+      "command": "node",
+      "args": ["/path/to/gtr-mcp/dist/index.js"],
       "cwd": "/path/to/frontend"
     },
     "gtr-backend": {
-      "command": "npx",
-      "args": ["gtr-mcp"],
+      "command": "node",
+      "args": ["/path/to/gtr-mcp/dist/index.js"],
       "cwd": "/path/to/backend"
     }
   }
@@ -187,7 +175,7 @@ Install gtr: https://github.com/coderabbitai/git-worktree-runner#installation
 Or point at the binary directly:
 
 ```bash
-GTR_BIN=/path/to/gtr gtr-mcp
+GTR_BIN=/path/to/gtr node /path/to/gtr-mcp/dist/index.js
 ```
 
 ### Hooks skipped
@@ -219,6 +207,9 @@ npm run typecheck  # tsc --noEmit type check
 npm run check      # FF-1: grep for shell execution patterns
 ```
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the CI gate and [CLAUDE.md](CLAUDE.md) for notes on the
+code; [AGENTS.md](AGENTS.md) is the guide for agents that use the server.
+
 ## Roadmap
 
 - **PR2**: gtr `--json` mode would remove regex parsing fragility for `worktree_create` output (tracking worktree_path and hook state).
@@ -242,3 +233,14 @@ src/
     ci.yml               CI: build + FF-1 + FF-3 + test + lint
 AGENTS.md                AI agent usage guide
 ```
+
+## Status
+
+Pre-1.0 (`v0.4.0`): the tool set and arguments can change in a minor release; v0.4.0 removed the
+`repo_path` argument and the `worktree_exec` tool. Changes are listed in [CHANGELOG.md](CHANGELOG.md),
+every document in [docs/INDEX.md](docs/INDEX.md), and vulnerabilities are reported as described in
+[SECURITY.md](SECURITY.md).
+
+## Licence
+
+Apache-2.0, see [LICENSE](LICENSE).
